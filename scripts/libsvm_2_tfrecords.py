@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-import tensorflow as tf
+import tensorflow_apps as tf
 import os
 import sys
 import re
