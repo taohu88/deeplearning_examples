@@ -1,1 +1,1 @@
-# deeplearning_examples
+# Deep Learning template codes and examples
