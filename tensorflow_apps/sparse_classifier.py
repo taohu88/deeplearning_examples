@@ -4,7 +4,7 @@
 import datetime
 import logging
 import os
-
+import numpy as np
 import tensorflow as tf
 
 # Define hyperparameters
@@ -18,7 +18,7 @@ flags.DEFINE_string("validate_tfrecords_file",
                     "../data/a8a/a8a_test.libsvm.tfrecords",
                     "The glob pattern of validate TFRecords files")
 flags.DEFINE_integer("feature_size", 124, "Number of feature size")
-flags.DEFINE_integer("label_size", 2, "Number of label size")
+flags.DEFINE_integer("label_size", 1, "Number of label size")
 flags.DEFINE_float("learning_rate", 0.01, "The learning rate")
 flags.DEFINE_integer("epoch_number", 100, "Number of epochs to train")
 flags.DEFINE_integer("batch_size", 1024, "The batch size of training")
@@ -166,12 +166,12 @@ def wide_and_deep_inference(FLAGS, sparse_ids, sparse_values, is_train=True):
 
 
 def inference(FLAGS, sparse_ids, sparse_values, is_train=True):
-    MODEL = FLAGS.model
-    if MODEL == "dnn":
+    model_name = FLAGS.model
+    if model_name == "dnn":
         return dnn_inference(FLAGS, sparse_ids, sparse_values, is_train)
-    elif MODEL == "lr":
+    elif model_name == "lr":
         return lr_inference(FLAGS, sparse_ids, sparse_values, is_train)
-    elif MODEL == "wide_and_deep":
+    elif model_name == "wide_and_deep":
         return wide_and_deep_inference(FLAGS, sparse_ids, sparse_values, is_train)
     else:
         logging.error("Unknown model, exit now")
@@ -187,7 +187,7 @@ def setup_optimizer(FLAGS, global_step):
         learning_rate = tf.train.exponential_decay(
             starter_learning_rate,
             global_step,
-            100000,
+            10000,
             FLAGS.lr_decay_rate,
             staircase=True)
     else:
@@ -198,7 +198,8 @@ def setup_optimizer(FLAGS, global_step):
 
 
 def setup_loss(FLAGS, logits, batch_labels):
-    if FLAGS.label_size >= 2:
+    if FLAGS.label_size > 1:
+        batch_labels = tf.to_int64(batch_labels)
         cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(
             logits=logits, labels=batch_labels)
     else:
@@ -210,25 +211,36 @@ def setup_loss(FLAGS, logits, batch_labels):
     return loss
 
 
-def setup_metrics(FLAGS, batch_labels, batch_ids, batch_values):
-    train_accuracy_logits = inference(FLAGS, batch_ids, batch_values, False)
-    train_softmax = tf.nn.softmax(train_accuracy_logits)
-    train_correct_prediction = tf.equal(
-        tf.argmax(train_softmax, 1), batch_labels)
+def setup_metrics(FLAGS, batch_labels, batch_ids, batch_values, accuracy_logits=None):
+    batch_labels = tf.to_int64(batch_labels)
+    if accuracy_logits is None:
+        accuracy_logits = inference(FLAGS, batch_ids, batch_values, False)
+
+    if FLAGS.label_size > 1:
+        train_softmax = tf.nn.softmax(accuracy_logits)
+        train_correct_prediction = tf.equal(
+            tf.argmax(train_softmax, 1), batch_labels)
+    else:
+        train_softmax = tf.nn.sigmoid(accuracy_logits)
+        logits2 = tf.squeeze(train_softmax, axis=1)
+        train_correct_prediction = tf.equal(
+                tf.cast(logits2 > 0.5, tf.int64),
+                batch_labels)
+
     train_accuracy = tf.reduce_mean(
         tf.cast(train_correct_prediction, tf.float32))
 
     # Define auc op for train data
-    batch_labels = tf.cast(batch_labels, tf.int32)
-    sparse_labels = tf.reshape(batch_labels, [-1, 1])
-    derived_size = tf.shape(batch_labels)[0]
-    indices = tf.reshape(tf.range(0, derived_size, 1), [-1, 1])
-    concated = tf.concat(axis=1, values=[indices, sparse_labels])
-    outshape = tf.stack([derived_size, FLAGS.label_size])
-    new_train_batch_labels = tf.sparse_to_dense(concated, outshape, 1.0, 0.0)
-    _, train_auc = tf.metrics.auc(new_train_batch_labels, train_softmax)
+    # batch_labels = tf.cast(batch_labels, tf.int32)
+    # sparse_labels = tf.reshape(batch_labels, [-1, 1])
+    # derived_size = tf.shape(batch_labels)[0]
+    # indices = tf.reshape(tf.range(0, derived_size, 1), [-1, 1])
+    # concated = tf.concat(axis=1, values=[indices, sparse_labels])
+    # outshape = tf.stack([derived_size, FLAGS.label_size])
+    # new_train_batch_labels = tf.sparse_to_dense(concated, outshape, 1.0, 0.0)
+    # _, train_auc = tf.metrics.auc(new_train_batch_labels, train_softmax)
 
-    return train_accuracy, train_auc
+    return train_accuracy #, train_auc
 
 
 def create_dir(path):
@@ -299,6 +311,37 @@ def tfrecord_generator(file_name):
         yield label, ids, values
 
 
+def create_evaluation_model(sparse_index, sparse_ids, sparse_values, sparse_shape):
+    inference_ids = tf.SparseTensor(sparse_index, sparse_ids, sparse_shape)
+    inference_values = tf.SparseTensor(sparse_index, sparse_values, sparse_shape)
+    inference_logits = inference(FLAGS, inference_ids, inference_values, False)
+
+    if FLAGS.label_size > 1:
+        probability = tf.nn.softmax(inference_logits)
+        prediction = tf.argmax(probability, 1)
+    else:
+        probability = tf.nn.sigmoid(inference_logits)
+        logits2 = tf.squeeze(probability, axis=1)
+        prediction = tf.cast(logits2 > 0.5, tf.int64)
+
+    return probability, prediction
+
+
+def batch_evaluation(sess, out, feed_dict, batch_labels, prediction, probability):
+    # Run inference
+    predictions, probabilities = sess.run(
+        [prediction, probability],
+        feed_dict=feed_dict)
+
+    # Save result into the file
+    for true_v, prob, pred in zip(batch_labels, probabilities, predictions):
+        prob_str = "\t".join(['{:.6f}'.format(x) for x in prob])
+        out.write("{}\t{}\t{}\n".format(int(true_v), prob_str, pred))
+
+    accuracies = sum([1 for t, p in zip(batch_labels, predictions) if int(t) == p])
+    return predictions, accuracies
+
+
 def evaluation(FLAGS, sess):
     logging.info("Start to run with evaluation")
 
@@ -307,11 +350,8 @@ def evaluation(FLAGS, sess):
     sparse_ids = tf.placeholder(tf.int64, [None])
     sparse_values = tf.placeholder(tf.float32, [None])
     sparse_shape = tf.placeholder(tf.int64, [2])
-    inference_ids = tf.SparseTensor(sparse_index, sparse_ids, sparse_shape)
-    inference_values = tf.SparseTensor(sparse_index, sparse_values, sparse_shape)
-    inference_logits = inference(FLAGS, inference_ids, inference_values, False)
-    inference_softmax = tf.nn.softmax(inference_logits)
-    inference_op = tf.argmax(inference_softmax, 1)
+
+    probability, prediction = create_evaluation_model(sparse_index, sparse_ids, sparse_values, sparse_shape)
 
     init_op = [
         tf.global_variables_initializer(),
@@ -352,25 +392,19 @@ def evaluation(FLAGS, sess):
             ins_num += 1
 
             if ins_num >= batch_sz:
-                # Run inference
-                prediction, prediction_softmax = sess.run(
-                    [inference_op, inference_softmax],
-                    feed_dict={
-                        sparse_index: batch_feature_index,
-                        sparse_ids: batch_ids,
-                        sparse_values: batch_values,
-                        sparse_shape: [ins_num, FLAGS.feature_size]
-                    })
+                feed_dict = {
+                    sparse_index: batch_feature_index,
+                    sparse_ids: batch_ids,
+                    sparse_values: batch_values,
+                    sparse_shape: [ins_num, FLAGS.feature_size]
+                }
+                prediction_v, accuracies = batch_evaluation(sess, out, feed_dict, batch_labels, prediction, probability)
                 end_time = datetime.datetime.now()
                 logging.info("[{}] processing batch {} size {}".format(end_time - start_time, batches, ins_num))
                 start_time = end_time
+                total += len(batch_labels)
+                acc_count += accuracies
 
-                # Save result into the file
-                for l, p, t in zip(batch_labels, prediction_softmax[:, 1], prediction):
-                    out.write("{}\t{:9.6f}\t{}\n".format(int(l>0.001), p, t))
-                    total += 1
-
-                acc_count += sum([1 for l, p in zip(batch_labels, prediction) if int(l>0.001) == p])
                 batches += 1
                 batch_feature_index = []
                 batch_labels = []
@@ -379,70 +413,66 @@ def evaluation(FLAGS, sess):
                 ins_num = 0
 
         if ins_num > 0:
-            # Run inference
-            prediction, prediction_softmax = sess.run(
-                [inference_op, inference_softmax],
-                feed_dict={
-                    sparse_index: batch_feature_index,
-                    sparse_ids: batch_ids,
-                    sparse_values: batch_values,
-                    sparse_shape: [ins_num, FLAGS.feature_size]
-                })
+            feed_dict = {
+                sparse_index: batch_feature_index,
+                sparse_ids: batch_ids,
+                sparse_values: batch_values,
+                sparse_shape: [ins_num, FLAGS.feature_size]
+            }
+            prediction_v, accuracies = batch_evaluation(sess, out, feed_dict, batch_labels, prediction, probability)
             end_time = datetime.datetime.now()
             logging.info("[{}] processing batch {} size {}".format(end_time - start_time, batches, ins_num))
-
-            # Save result into the file
-            for l, p, t in zip(batch_labels, prediction_softmax[:, 1], prediction):
-                out.write("{}\t{:9.6f}\t{}\n".format(int(l > 0.001), p, t))
-                total += 1
-            batches += 1
-            acc_count += sum([1 for l, p in zip(batch_labels, prediction) if int(l > 0.001) == p])
+            total += len(batch_labels)
+            acc_count += accuracies
 
     logging.info("Accuracy is {}".format(acc_count/total))
 
 
+def create_model_for_train(FLAGS, batch_labels, batch_ids, batch_values):
+    logits = inference(FLAGS, batch_ids, batch_values, True)
+    loss = setup_loss(FLAGS, logits, batch_labels)
+    # reuse logits for training
+    train_accuracy = setup_metrics(FLAGS, batch_labels, batch_ids, batch_values, accuracy_logits=logits)
+    return loss, train_accuracy
+
+
 def train_validate(FLAGS, sess):
-    EPOCH_NUMBER = FLAGS.epoch_number
-    if EPOCH_NUMBER <= 0:
-        EPOCH_NUMBER = None
+    epoch_num = FLAGS.epoch_number
+    if epoch_num <= 0:
+        epoch_num = None
 
     OUTPUT_PATH = FLAGS.output_path
 
     # Read TFRecords files for training
     filename_queue = tf.train.string_input_producer(
         tf.train.match_filenames_once(FLAGS.train_tfrecords_file),
-        num_epochs=EPOCH_NUMBER)
+        num_epochs=epoch_num)
     batch_labels, batch_ids, batch_values = generate_batches(FLAGS, filename_queue, is_train=True)
 
     # Read TFRecords file for validation
     validate_filename_queue = tf.train.string_input_producer(
         tf.train.match_filenames_once(FLAGS.validate_tfrecords_file),
-        num_epochs=EPOCH_NUMBER)
+        num_epochs=epoch_num)
     validate_batch_labels, validate_batch_ids, validate_batch_values = generate_batches(FLAGS, validate_filename_queue,
                                                                                         is_train=True)
 
-    batch_labels = tf.to_int64(batch_labels)
-    logits = inference(FLAGS, batch_ids, batch_values, True)
-    loss = setup_loss(FLAGS, logits, batch_labels)
+    loss, train_accuracy = create_model_for_train(FLAGS, batch_labels, batch_ids, batch_values)
 
     global_step = tf.Variable(0, name="global_step", trainable=False)
     optimizer = setup_optimizer(FLAGS, global_step)
-
     train_op = optimizer.minimize(loss, global_step=global_step)
     tf.get_variable_scope().reuse_variables()
 
-    # Define accuracy op for train data
-    train_accuracy, train_auc = setup_metrics(FLAGS, batch_labels, batch_ids, batch_values)
-    validate_batch_labels = tf.to_int64(validate_batch_labels)
-    validate_accuracy, validate_auc = setup_metrics(FLAGS, validate_batch_labels, validate_batch_ids, validate_batch_values)
+    # We don't have logits for validation
+    validate_accuracy = setup_metrics(FLAGS, validate_batch_labels, validate_batch_ids, validate_batch_values)
 
     # Initialize saver and summary
     saver = tf.train.Saver()
     tf.summary.scalar("loss", loss)
     tf.summary.scalar("train_accuracy", train_accuracy)
-    tf.summary.scalar("train_auc", train_auc)
+    # tf.summary.scalar("train_auc", train_auc)
     tf.summary.scalar("validate_accuracy", validate_accuracy)
-    tf.summary.scalar("validate_auc", validate_auc)
+    # tf.summary.scalar("validate_auc", validate_auc)
     summary_op = tf.summary.merge_all()
 
     init_op = [
@@ -468,18 +498,16 @@ def train_validate(FLAGS, sess):
 
                 # Print state while training
                 if step % FLAGS.steps_to_validate == 0:
-                    loss_value, train_accuracy_value, train_auc_value, validate_accuracy_value, auc_value, summary_value = sess.run(
+                    loss_value, train_accuracy_value, validate_accuracy_value, summary_value = sess.run(
                         [
-                            loss, train_accuracy, train_auc, validate_accuracy,
-                            validate_auc, summary_op
+                            loss, train_accuracy, validate_accuracy, summary_op
                         ])
                     end_time = datetime.datetime.now()
 
                     logging.info(
-                        "[{}] Step: {}, loss: {}, train_acc: {}, train_auc: {}, valid_acc: {}, valid_auc: {}".
+                        "[{}] Step: {}, loss: {}, train_acc: {}, valid_acc: {}".
                             format(end_time - start_time, step, loss_value,
-                                   train_accuracy_value, train_auc_value,
-                                   validate_accuracy_value, auc_value))
+                                   train_accuracy_value, validate_accuracy_value))
                     writer.add_summary(summary_value, step)
                     checkpoint_file = FLAGS.checkpoint_path + "/checkpoint.ckpt"
                     saver.save(sess, checkpoint_file, global_step=step)
@@ -498,16 +526,16 @@ def main():
         import coloredlogs
         coloredlogs.install()
     logging.basicConfig(level=logging.INFO)
-    MODE = FLAGS.mode
+    mode = FLAGS.mode
     create_dirs(FLAGS)
 
-    logging.info("Start to run with mode: {} for model {}".format(MODE, FLAGS.model))
+    logging.info("Start to run with mode: {} for model {}".format(mode, FLAGS.model))
 
     # Create session to run
     with tf.Session() as sess:
-        if MODE == "train":
+        if mode == "train":
             train_validate(FLAGS, sess)
-        elif MODE == "inference_with_tfrecords":
+        elif mode == "inference_with_tfrecords":
             evaluation(FLAGS, sess)
 
 
