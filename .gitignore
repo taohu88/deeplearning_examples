@@ -3,7 +3,8 @@
 
 # All file under .idea
 .idea/*
-
+*.pyc
+*
 # CMake
 cmake-build-debug/
 cmake-build-release/
