@@ -1,0 +1,170 @@
+# Base LR model
+
+command = Train:WriteTest
+# command = WriteTest
+
+precision = "float"; traceLevel = 1 ;
+deviceId = "auto"
+# deviceId = -1
+
+dataDir = "../data/a8a"
+outputDir = "./lr_cntk"
+
+trainFile = "$dataDir$/a8a_train.cntk"
+validateFile = "$dataDir$/a8a_test.cntk"
+testFile = ""$dataDir$/a8a_test.cntk"
+
+modelPath = "$outputDir$/lr/lr"
+keepCheckPointFiles = true
+
+D_DIM = 124 # $D_DIM$ * 1
+
+Train = {
+    action = "train"
+
+    BrainScriptNetworkBuilder = {
+		# Inputs
+        # D   = Input($D_DIM$, sparse=true)
+        D   = Input($D_DIM$)
+        L   = Input(1)
+
+		model = Sequential (
+			# FeatureMVNLayer  {} :
+			DenseLayer {1, init='xavier', activation=Sigmoid}
+		)
+
+		p = model (D)
+
+        ce =  Logistic (L, p)
+        errs = SquareError (L, p)
+
+        # connect to system
+        criterionNodes  = (ce)
+        evaluationNodes = (errs)
+        outputNodes = (p)
+    }
+
+    SGD = {
+        epochSize = 0
+        minibatchSize = 1024
+        # CNTK weights new gradient by (1-momentum) for unit gain, thus we divide Caffe's learning rate by (1-momentum)
+        learningRatesPerSample = 0.01000000*2:0.00618000*2:0.00381924*2:0.00236029*2:0.00145866*2
+		gradUpdateType =  "adagrad"
+		# for gradUpdateType = "adaGrad" or "rmsProp":
+		normWithAveMultiplier = true
+
+        # momentumAsTimeConstant = 25600*10:2560
+        maxEpochs = 100
+        # CNTK L2 regularization is per sample, thus same as Caffe
+        L2RegWeight = 0.005
+        # L1RegWeight = 0.005
+        # dropoutRate = 0*5:0.5
+        numMBsToShowResult = 300
+
+        # autoAdjust = {
+        #     autoAdjustLR = "adjustAfterEpoch"
+        #     autoAdjustMinibatch = false
+
+        #     # for autoAdjustLR = "adjustAfterEpoch":
+        #     reduceLearnRateIfImproveLessThan = 0
+        #     learnRateDecreaseFactor = 0.618
+        #     increaseLearnRateIfImproveMoreThan = 0.01
+        #     learnRateIncreaseFactor = 1.382
+        #     loadBestModel = false
+        #     learnRateAdjustInterval = 1
+        #     useCVSetControlLRIfCVExists = false
+        #     useEvalCriterionControlLR = false
+
+        #     # for autoAdjustLR = "searchBeforeEpoch":
+        #     numSamples4Search = 80
+        #     numPrevLearnRates = 5
+        #     numBestSearchEpoch = 4
+
+        #     # for autoAdjustMinibatch = true:
+        #     numSamples4Search = 80
+        #     minibatchSizeTuningFrequency = 1
+        #     minibatchSizeTuningMax = 1048576
+        #     minibatchSearchCriterionErrorMargin = 1
+        # }
+    }
+
+    reader = {
+        readerType = "CNTKTextFormatReader"
+        file = "$trainFile$"
+        randomize = true
+
+        input = {
+            D   = { dim = $D_DIM$; format = "sparse" }
+            L   = { dim = 1; format = "Dense" }
+        }
+    }
+
+    cvReader = {
+        readerType = "CNTKTextFormatReader"
+        file = "$validateFile$"
+        randomize = "None"
+
+        input = {
+            D   = { dim = $D_DIM$; format = "sparse" }
+            L   = { dim = 1; format = "Dense" }
+        }
+    }
+}
+
+# validate
+Validate = {
+    action = "cv"
+    minibatchSize = 1024
+    evalNodeNames = errs
+    crossValidationInterval = 3:1:124
+
+    reader = {
+        readerType = "CNTKTextFormatReader"
+        file = "$validateFile$"
+
+        input = {
+            D   = { dim = $D_DIM$; format = "sparse" }
+            L   = { dim = 1; format = "Dense" }
+        }
+    }
+}
+
+# Eval action
+Eval = {
+    action = "eval"
+    minibatchSize = 1024
+    evalNodeNames = errs
+
+    reader = {
+        readerType = "CNTKTextFormatReader"
+        file = "$testFile$"
+
+        input = {
+            D   = { dim = $D_DIM$; format = "sparse" }
+            L   = { dim = 1; format = "Dense" }
+        }
+    }
+}
+
+# Write network output for entire test data set
+WriteTest = {
+    action = "write"
+    minibatchSize = 1024
+
+    BrainScriptNetworkBuilder = (
+        BS.Network.Load ("$modelPath$")
+    )
+
+    outputPath="$outputDir$/prediction"
+
+    reader = {
+        readerType = "CNTKTextFormatReader"
+        randomize = false
+        file = "$testFile$"
+
+        input = {
+            D   = { dim = $D_DIM$; format = "sparse" }
+            L   = { dim = 1; format = "Dense" }
+        }
+    }
+}

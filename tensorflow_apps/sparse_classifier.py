@@ -19,6 +19,7 @@ flags.DEFINE_string("validate_tfrecords_file",
 flags.DEFINE_integer("feature_size", 124, "Number of feature size")
 flags.DEFINE_integer("label_size", 1, "Number of label size")
 flags.DEFINE_float("learning_rate", 0.01, "The learning rate")
+flags.DEFINE_float("l2_reg", 0.005, "The l2 regularization rate")
 flags.DEFINE_integer("epoch_number", 100, "Number of epochs to train")
 flags.DEFINE_integer("batch_size", 1024, "The batch size of training")
 flags.DEFINE_integer("validate_batch_size", 1024,
@@ -32,7 +33,7 @@ flags.DEFINE_string("checkpoint_path", "./sparse_checkpoint/",
 flags.DEFINE_string("output_path", "./sparse_tensorboard/",
                     "The path of tensorboard event files")
 flags.DEFINE_string("model", "lr", "Support dnn, lr, wide_and_deep")
-flags.DEFINE_string("model_network", "128 32 8", "The neural network of model")
+flags.DEFINE_string("model_network", "64 16", "The neural network of model")
 flags.DEFINE_boolean("enable_bn", False, "Enable batch normalization or not")
 flags.DEFINE_float("bn_epsilon", 0.001, "The epsilon of batch normalization")
 flags.DEFINE_boolean("enable_dropout", False, "Enable dropout or not")
@@ -534,7 +535,7 @@ def main():
     with tf.Session() as sess:
         if mode == "train":
             train_validate(FLAGS, sess)
-        elif mode == "inference_with_tfrecords":
+        elif mode == "inference":
             evaluation(FLAGS, sess)
 
 
