@@ -24,7 +24,7 @@ flags.DEFINE_integer("epoch_number", 100, "Number of epochs to train")
 flags.DEFINE_integer("batch_size", 1024, "The batch size of training")
 flags.DEFINE_integer("validate_batch_size", 1024,
                      "The batch size of validation")
-flags.DEFINE_integer("batch_thread_number", 1,
+flags.DEFINE_integer("batch_thread_number", 2,
                      "Number of threads to read data")
 flags.DEFINE_integer("min_after_dequeue", 100,
                      "The minimal number after dequeue")
