@@ -19,7 +19,7 @@ flags.DEFINE_string("validate_tfrecords_file",
 flags.DEFINE_integer("feature_size", 124, "Number of feature size")
 flags.DEFINE_integer("label_size", 1, "Number of label size")
 flags.DEFINE_float("learning_rate", 0.01, "The learning rate")
-flags.DEFINE_float("l2_reg", 0.005, "The l2 regularization rate")
+flags.DEFINE_float("l2_reg", 0, "The l2 regularization rate")
 flags.DEFINE_integer("epoch_number", 100, "Number of epochs to train")
 flags.DEFINE_integer("batch_size", 1024, "The batch size of training")
 flags.DEFINE_integer("validate_batch_size", 1024,
@@ -90,9 +90,11 @@ def generate_batches(FLAGS, filename_queue, is_train=True):
     return batch_labels, batch_ids, batch_values
 
 
-def full_connect(inputs, weights_shape, biases_shape, is_train=True):
+def full_connect(FLAGS, inputs, weights_shape, biases_shape, is_train=True):
+    l2_reg = tf.contrib.layers.l2_regularizer(FLAGS.l2_reg) if FLAGS.l2_reg > 0.0 else None
+
     weights = tf.get_variable(
-        "weights", weights_shape, initializer=tf.random_normal_initializer())
+        "weights", weights_shape, regularizer=l2_reg, initializer=tf.random_normal_initializer())
     biases = tf.get_variable(
         "biases", biases_shape, initializer=tf.random_normal_initializer())
     layer = tf.matmul(inputs, weights) + biases
@@ -108,22 +110,24 @@ def full_connect(inputs, weights_shape, biases_shape, is_train=True):
     return layer
 
 
-def sparse_full_connect(sparse_ids,
+def sparse_full_connect(FLAGS, sparse_ids,
                         sparse_values,
                         weights_shape,
                         biases_shape,
                         is_train=True):
+    l2_reg = tf.contrib.layers.l2_regularizer(FLAGS.l2_reg) if FLAGS.l2_reg > 0.0 else None
+
     weights = tf.get_variable(
-        "weights", weights_shape, initializer=tf.random_normal_initializer())
+        "weights", weights_shape, regularizer=l2_reg, initializer=tf.random_normal_initializer())
     biases = tf.get_variable(
         "biases", biases_shape, initializer=tf.random_normal_initializer())
     return tf.nn.embedding_lookup_sparse(
         weights, sparse_ids, sparse_values, combiner="sum") + biases
 
 
-def full_connect_relu(inputs, weights_shape, biases_shape, is_train=True):
+def full_connect_relu(FLAGS, inputs, weights_shape, biases_shape, is_train=True):
     return tf.nn.relu(
-        full_connect(inputs, weights_shape, biases_shape, is_train))
+        full_connect(FLAGS, inputs, weights_shape, biases_shape, is_train))
 
 
 def dnn_inference(FLAGS, sparse_ids, sparse_values, is_train=True):
@@ -132,19 +136,19 @@ def dnn_inference(FLAGS, sparse_ids, sparse_values, is_train=True):
     model_network_hidden_units = [int(i) for i in FLAGS.model_network.split()]
 
     with tf.variable_scope("input"):
-        sparse_layer = sparse_full_connect(sparse_ids, sparse_values, [
+        sparse_layer = sparse_full_connect(FLAGS, sparse_ids, sparse_values, [
             input_units, model_network_hidden_units[0]
         ], [model_network_hidden_units[0]], is_train)
         layer = tf.nn.relu(sparse_layer)
 
     for i in range(len(model_network_hidden_units) - 1):
         with tf.variable_scope("layer{}".format(i)):
-            layer = full_connect_relu(layer, [
+            layer = full_connect_relu(FLAGS, layer, [
                 model_network_hidden_units[i], model_network_hidden_units[i + 1]
             ], [model_network_hidden_units[i + 1]], is_train)
 
     with tf.variable_scope("output"):
-        layer = full_connect(layer,
+        layer = full_connect(FLAGS, layer,
                              [model_network_hidden_units[-1],
                               output_units], [output_units], is_train)
     return layer
@@ -155,13 +159,13 @@ def lr_inference(FLAGS, sparse_ids, sparse_values, is_train=True):
     output_units = FLAGS.label_size
 
     with tf.variable_scope("logistic_regression"):
-        layer = sparse_full_connect(sparse_ids, sparse_values,
+        layer = sparse_full_connect(FLAGS, sparse_ids, sparse_values,
                                     [input_units, output_units], [output_units])
     return layer
 
 
 def wide_and_deep_inference(FLAGS, sparse_ids, sparse_values, is_train=True):
-    return lr_inference(sparse_ids, sparse_values, is_train) + dnn_inference(
+    return lr_inference(FLAGS, sparse_ids, sparse_values, is_train) + dnn_inference(
         sparse_ids, sparse_values, is_train)
 
 
@@ -207,7 +211,7 @@ def setup_loss(FLAGS, logits, batch_labels):
         cross_entropy = tf.nn.sigmoid_cross_entropy_with_logits(
             logits=logits2, labels=batch_labels)
 
-    loss = tf.reduce_mean(cross_entropy, name="loss")
+    loss = tf.reduce_mean(cross_entropy, name="loss") + tf.losses.get_regularization_loss()
     return loss
 
 
