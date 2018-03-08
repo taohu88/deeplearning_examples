@@ -1,6 +1,6 @@
 # Base LR model
 
-command = Train:WriteTest
+command = Train:Eval:WriteTest
 # command = WriteTest
 
 precision = "float"; traceLevel = 1 ;
@@ -8,13 +8,13 @@ deviceId = "auto"
 # deviceId = -1
 
 dataDir = "../data/a8a"
-outputDir = "./lr_cntk"
+outputDir = "./Output"
 
-trainFile = "$dataDir$/a8a_train.cntk"
-validateFile = "$dataDir$/a8a_test.cntk"
-testFile = ""$dataDir$/a8a_test.cntk"
+trainFile = "$dataDir$/a8a_train_cntk.tsv"
+validateFile = "$dataDir$/a8a_test_cntk.tsv"
+testFile = "$dataDir$/a8a_test_cntk.tsv"
 
-modelPath = "$outputDir$/lr/lr"
+modelPath = "$outputDir$/Model/lr"
 keepCheckPointFiles = true
 
 D_DIM = 124 # $D_DIM$ * 1
@@ -30,13 +30,16 @@ Train = {
 
 		model = Sequential (
 			# FeatureMVNLayer  {} :
-			DenseLayer {1, init='xavier', activation=Sigmoid}
+			# DenseLayer {32, activation=ReLU} :
+			DenseLayer {1, activation=Sigmoid}
 		)
 
 		p = model (D)
 
+        hammingLoss (y, p) = ReduceSum (y != (p > 0.5))
+
         ce =  Logistic (L, p)
-        errs = SquareError (L, p)
+        errs = hammingLoss (L, p)
 
         # connect to system
         criterionNodes  = (ce)
@@ -48,13 +51,13 @@ Train = {
         epochSize = 0
         minibatchSize = 1024
         # CNTK weights new gradient by (1-momentum) for unit gain, thus we divide Caffe's learning rate by (1-momentum)
-        learningRatesPerSample = 0.01000000*2:0.00618000*2:0.00381924*2:0.00236029*2:0.00145866*2
+        learningRatesPerSample = 0.01000000*10:0.00618000*10:0.00381924*10:0.00236029*10:0.00145866*10
 		gradUpdateType =  "adagrad"
 		# for gradUpdateType = "adaGrad" or "rmsProp":
 		normWithAveMultiplier = true
 
         # momentumAsTimeConstant = 25600*10:2560
-        maxEpochs = 100
+        maxEpochs = 200
         # CNTK L2 regularization is per sample, thus same as Caffe
         L2RegWeight = 0.005
         # L1RegWeight = 0.005
